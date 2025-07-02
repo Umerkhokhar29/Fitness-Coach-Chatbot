@@ -1,13 +1,14 @@
 import streamlit as st
 import pandas as pd
 from openai import OpenAI
-import chromadb
+import numpy as np
 from sentence_transformers import SentenceTransformer
 import os
 import logging
 from typing import List, Dict
 import json
-import time
+import pickle
+from sklearn.metrics.pairwise import cosine_similarity
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -25,8 +26,8 @@ class FitnessCoachRAG:
     def __init__(self, csv_path: str, model_name: str = 'all-MiniLM-L6-v2'):
         """Initialize the RAG Fitness Coach"""
         self.embedder = SentenceTransformer(model_name)
-        self.chroma_client = chromadb.Client()
-        self.collection = None
+        self.documents = []
+        self.embeddings = None
         
         # Initialize OpenAI client
         api_key = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY", "")
@@ -51,76 +52,119 @@ class FitnessCoachRAG:
             df = pd.read_csv(csv_path)
             
             # Handle missing values and clean data
+            if 'content' not in df.columns:
+                # Try to find the right column
+                possible_columns = ['content', 'text', 'document', 'data', 'description']
+                content_col = None
+                for col in possible_columns:
+                    if col in df.columns:
+                        content_col = col
+                        break
+                
+                if content_col is None:
+                    st.error(f"Could not find content column. Available columns: {list(df.columns)}")
+                    st.stop()
+                
+                df = df.rename(columns={content_col: 'content'})
+            
             df = df.dropna(subset=['content'])
             df['content'] = df['content'].astype(str).str.strip()
             df = df[df['content'] != '']
             
-            texts = df['content'].tolist()
-            logger.info(f"Loaded {len(texts)} documents from {csv_path}")
+            self.documents = df['content'].tolist()
+            logger.info(f"Loaded {len(self.documents)} documents from {csv_path}")
             
-            # Create collection
-            try:
-                self.collection = self.chroma_client.create_collection(
-                    name="fitness_knowledge",
-                    metadata={"hnsw:space": "cosine"}
-                )
-            except Exception:
-                self.collection = self.chroma_client.get_collection("fitness_knowledge")
-                return  # Collection already exists with data
-            
-            # Add texts with embeddings in batches
-            batch_size = 100
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            for i in range(0, len(texts), batch_size):
-                batch_texts = texts[i:i+batch_size]
-                batch_embeddings = self.embedder.encode(batch_texts).tolist()
-                batch_ids = [f"doc_{j}" for j in range(i, min(i+batch_size, len(texts)))]
-                
-                self.collection.add(
-                    documents=batch_texts,
-                    embeddings=batch_embeddings,
-                    ids=batch_ids
-                )
-                
-                # Update progress
-                progress = min(i + batch_size, len(texts)) / len(texts)
-                progress_bar.progress(progress)
-                status_text.text(f"Processing documents: {min(i+batch_size, len(texts))}/{len(texts)}")
-            
-            progress_bar.empty()
-            status_text.empty()
+            # Create embeddings
+            self._create_embeddings()
             
         except Exception as e:
             st.error(f"Error loading data: {e}")
             logger.error(f"Error loading data: {e}")
             st.stop()
     
-    def get_context(self, query: str, k: int = 5) -> List[str]:
-        """Retrieve top-k similar documents"""
+    def _create_embeddings(self):
+        """Create embeddings for all documents"""
         try:
-            query_embedding = self.embedder.encode(query).tolist()
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=k,
-                include=['documents', 'distances']
-            )
+            # Check if embeddings cache exists
+            cache_file = "fitness_embeddings.pkl"
             
-            documents = results['documents'][0]
-            distances = results['distances'][0] if 'distances' in results else []
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, 'rb') as f:
+                        cached_data = pickle.load(f)
+                        if len(cached_data['documents']) == len(self.documents):
+                            self.embeddings = cached_data['embeddings']
+                            st.success("✅ Loaded cached embeddings")
+                            return
+                except:
+                    pass  # If cache loading fails, create new embeddings
             
-            # Filter by relevance
+            # Create new embeddings
+            batch_size = 32
+            all_embeddings = []
+            
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            for i in range(0, len(self.documents), batch_size):
+                batch_docs = self.documents[i:i+batch_size]
+                batch_embeddings = self.embedder.encode(batch_docs, show_progress_bar=False)
+                all_embeddings.extend(batch_embeddings)
+                
+                # Update progress
+                progress = min(i + batch_size, len(self.documents)) / len(self.documents)
+                progress_bar.progress(progress)
+                status_text.text(f"Creating embeddings: {min(i+batch_size, len(self.documents))}/{len(self.documents)}")
+            
+            self.embeddings = np.array(all_embeddings)
+            
+            # Cache embeddings for faster future loads
+            try:
+                with open(cache_file, 'wb') as f:
+                    pickle.dump({
+                        'documents': self.documents,
+                        'embeddings': self.embeddings
+                    }, f)
+            except:
+                pass  # If caching fails, it's not critical
+            
+            progress_bar.empty()
+            status_text.empty()
+            
+        except Exception as e:
+            st.error(f"Error creating embeddings: {e}")
+            logger.error(f"Error creating embeddings: {e}")
+            st.stop()
+    
+    def get_context(self, query: str, k: int = 5) -> List[str]:
+        """Retrieve top-k similar documents using cosine similarity"""
+        try:
+            # Create query embedding
+            query_embedding = self.embedder.encode([query])
+            
+            # Calculate similarities
+            similarities = cosine_similarity(query_embedding, self.embeddings)[0]
+            
+            # Get top-k most similar documents
+            top_indices = np.argsort(similarities)[::-1][:k]
+            
+            # Filter by similarity threshold (you can adjust this)
+            threshold = 0.3  # Minimum similarity score
             filtered_docs = []
-            for doc, dist in zip(documents, distances):
-                if len(distances) == 0 or dist < 0.8:
-                    filtered_docs.append(doc)
             
-            return filtered_docs[:k] if filtered_docs else documents[:min(2, len(documents))]
+            for idx in top_indices:
+                if similarities[idx] >= threshold:
+                    filtered_docs.append(self.documents[idx])
+            
+            # Return at least 2 documents even if below threshold
+            if not filtered_docs:
+                filtered_docs = [self.documents[idx] for idx in top_indices[:2]]
+            
+            return filtered_docs
             
         except Exception as e:
             logger.error(f"Error retrieving context: {e}")
-            return []
+            return self.documents[:2] if self.documents else []
     
     def ask_coach(self, query: str, conversation_history: List = None) -> str:
         """Get response from the fitness coach"""
@@ -204,6 +248,13 @@ with st.sidebar:
         help="Path to your fitness data CSV file"
     )
     
+    # Model selection
+    model_option = st.selectbox(
+        "Choose embedding model:",
+        ["all-MiniLM-L6-v2", "all-mpnet-base-v2", "paraphrase-MiniLM-L6-v2"],
+        help="Different models offer trade-offs between speed and accuracy"
+    )
+    
     # Initialize button
     if st.button("Initialize Coach", type="primary"):
         with st.spinner("Initializing your AI Fitness Coach..."):
@@ -215,7 +266,7 @@ with st.sidebar:
                         f.write(uploaded_file.getbuffer())
                     file_path = "temp_fitness_data.csv"
                 
-                st.session_state.coach = FitnessCoachRAG(file_path)
+                st.session_state.coach = FitnessCoachRAG(file_path, model_option)
                 st.session_state.initialized = True
                 st.success("✅ Coach initialized successfully!")
                 
@@ -266,10 +317,14 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
     
-    # Stats
+    # Stats and info
     if st.session_state.messages:
         st.subheader("📊 Chat Stats")
         st.metric("Messages", len(st.session_state.messages))
+    
+    if st.session_state.initialized and st.session_state.coach:
+        st.subheader("📋 Data Info")
+        st.metric("Documents Loaded", len(st.session_state.coach.documents))
 
 # Main interface
 st.title("💪 AI Fitness Coach")
@@ -289,8 +344,12 @@ if not st.session_state.initialized:
         "How often should I work out each week?"
     ]
     
-    for example in examples:
-        st.markdown(f"• {example}")
+    col1, col2 = st.columns(2)
+    for i, example in enumerate(examples):
+        if i % 2 == 0:
+            col1.markdown(f"• {example}")
+        else:
+            col2.markdown(f"• {example}")
 
 else:
     # Chat interface
@@ -332,7 +391,7 @@ st.divider()
 st.markdown(
     """
     <div style='text-align: center; color: #666;'>
-        🏋️ Built with Streamlit • Powered by OpenAI & ChromaDB • Stay Strong! 💪
+        🏋️ Built with Streamlit • Powered by OpenAI & SentenceTransformers • Stay Strong! 💪
     </div>
     """,
     unsafe_allow_html=True

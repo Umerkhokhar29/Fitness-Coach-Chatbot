@@ -1,6 +1,7 @@
 streamlit
 pandas
 openai
-chromadb
 sentence-transformers
+numpy
+scikit-learn
 protobuf==3.20.3
