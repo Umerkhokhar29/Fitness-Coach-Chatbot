@@ -313,9 +313,10 @@ with st.sidebar:
     st.divider()
     
     # Clear chat
-    if st.button("🗑️ Clear Chat"):
-        st.session_state.messages = []
-        st.rerun()
+    if st.session_state.initialized and st.session_state.coach:
+        if st.button("🗑️ Clear Chat"):
+            st.session_state.messages = []
+            st.rerun()
     
     # Stats and info
     if st.session_state.messages:
