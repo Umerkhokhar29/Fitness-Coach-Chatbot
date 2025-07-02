@@ -276,39 +276,39 @@ with st.sidebar:
     st.divider()
     
     # Quick actions
-    st.subheader("🎯 Quick Actions")
-    
-    if st.button("💡 Get General Tips"):
-        if st.session_state.initialized:
-            st.session_state.messages.append({
-                "role": "user", 
-                "content": "What are some general fitness tips for beginners?"
-            })
-            st.rerun()
-    
-    if st.button("🏃 Cardio Advice"):
-        if st.session_state.initialized:
-            st.session_state.messages.append({
-                "role": "user", 
-                "content": "What's the best cardio routine for weight loss?"
-            })
-            st.rerun()
-    
-    if st.button("💪 Strength Training"):
-        if st.session_state.initialized:
-            st.session_state.messages.append({
-                "role": "user", 
-                "content": "How should I start strength training as a beginner?"
-            })
-            st.rerun()
-    
-    if st.button("🥗 Nutrition Tips"):
-        if st.session_state.initialized:
-            st.session_state.messages.append({
-                "role": "user", 
-                "content": "What should I eat to support my fitness goals?"
-            })
-            st.rerun()
+    if st.session_state.initialized and st.session_state.coach:
+        st.subheader("🎯 Quick Actions")
+        if st.button("💡 Get General Tips"):
+            if st.session_state.initialized:
+                st.session_state.messages.append({
+                    "role": "user", 
+                    "content": "What are some general fitness tips for beginners?"
+                })
+                st.rerun()
+        
+        if st.button("🏃 Cardio Advice"):
+            if st.session_state.initialized:
+                st.session_state.messages.append({
+                    "role": "user", 
+                    "content": "What's the best cardio routine for weight loss?"
+                })
+                st.rerun()
+        
+        if st.button("💪 Strength Training"):
+            if st.session_state.initialized:
+                st.session_state.messages.append({
+                    "role": "user", 
+                    "content": "How should I start strength training as a beginner?"
+                })
+                st.rerun()
+        
+        if st.button("🥗 Nutrition Tips"):
+            if st.session_state.initialized:
+                st.session_state.messages.append({
+                    "role": "user", 
+                    "content": "What should I eat to support my fitness goals?"
+                })
+                st.rerun()
     
     st.divider()
     
